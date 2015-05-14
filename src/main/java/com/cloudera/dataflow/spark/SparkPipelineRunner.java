@@ -112,7 +112,7 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
     conf.setMaster(mOptions.getSparkMaster());
     conf.setAppName("spark pipeline job");
     conf.set("sun.io.serialization.extendeddebuginfo", "true");
-    conf.set("spark.serializer", KryoSerializer.class.getCanonicalName());
+    conf.set("spark.serializer", CoderSerializer.class.getCanonicalName());
     return new JavaSparkContext(conf);
   }
 
