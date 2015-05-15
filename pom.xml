@@ -240,6 +240,30 @@ License.
                         </execution>
                     </executions>
                 </plugin>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>2.3</version>
+                <executions>
+                  <execution>
+                    <phase>package</phase>
+                    <goals>
+                      <goal>shade</goal>
+                    </goals>
+                    <configuration>
+                      <relocations>
+                        <relocation>
+                          <pattern>com.google.common</pattern>
+                          <shadedPattern>com.cloudera.dataflow.spark.relocated.com.google.common</shadedPattern>
+                        </relocation>
+                      </relocations>
+                      <transformers>
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                      </transformers>
+                    </configuration>
+                  </execution>
+                </executions>
+              </plugin>
             </plugins>
         </pluginManagement>
         <plugins>
@@ -261,7 +285,7 @@ License.
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-assembly-plugin</artifactId>
+                <artifactId>maven-shade-plugin</artifactId>
             </plugin>
         </plugins>
     </build>
