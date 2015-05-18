@@ -4,6 +4,8 @@ import com.cloudera.dataflow.spark.coders.SeqCoder;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.cloud.dataflow.sdk.coders.ByteArrayCoder;
 import com.google.cloud.dataflow.sdk.coders.Coder;
+import com.google.cloud.dataflow.sdk.coders.CoderFactory;
+import com.google.cloud.dataflow.sdk.coders.CoderHelper;
 import com.google.cloud.dataflow.sdk.coders.CoderRegistry;
 import com.google.cloud.dataflow.sdk.coders.DoubleCoder;
 import com.google.cloud.dataflow.sdk.coders.InstantCoder;
@@ -20,6 +22,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -54,14 +57,11 @@ public class CoderSerializer extends Serializer implements Serializable {
     public <U> SerializationStream writeObject(U t, ClassTag<U> tag) {
       Class<?> cls = tag.runtimeClass();
       try {
-        // If U is a collection type (e.g. List or Seq) then we can't get the component
-        // type (since we only have ClassTag, not TypeTag). The result is that we can't
-        // find the correct coder here.
-        Optional<? extends Coder<?>> coder = coderRegistry.getCoder(TypeToken.of(cls));
-        if (!coder.isPresent()) {
+        Coder<U> coder = CoderHelper.getDefaultCoder(coderRegistry, t, cls);
+        if (coder == null) {
           throw new RuntimeException("No coder found for class " + cls);
         }
-        ((Coder<U>) coder.get()).encode(t, out, Coder.Context.OUTER);
+        coder.encode(t, out, Coder.Context.OUTER);
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
@@ -101,6 +101,9 @@ public class CoderSerializer extends Serializer implements Serializable {
     public <U> U readObject(ClassTag<U> tag) {
       Class<?> cls = tag.runtimeClass();
       try {
+        // If U is a collection type (e.g. List or Seq) then we can't get the component
+        // type (since we only have ClassTag, not TypeTag). The result is that we can't
+        // find the correct coder here.
         Optional<? extends Coder<?>> coder = coderRegistry.getCoder(TypeToken.of(cls));
         if (!coder.isPresent()) {
           throw new RuntimeException("No coder found for class " + cls);
