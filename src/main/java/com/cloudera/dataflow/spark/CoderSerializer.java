@@ -1,8 +1,10 @@
 package com.cloudera.dataflow.spark;
 
+import com.cloudera.dataflow.spark.coders.SeqCoder;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.cloud.dataflow.sdk.coders.ByteArrayCoder;
 import com.google.cloud.dataflow.sdk.coders.Coder;
+import com.google.cloud.dataflow.sdk.coders.CoderRegistry;
 import com.google.cloud.dataflow.sdk.coders.DoubleCoder;
 import com.google.cloud.dataflow.sdk.coders.InstantCoder;
 import com.google.cloud.dataflow.sdk.coders.StringUtf8Coder;
@@ -10,6 +12,8 @@ import com.google.cloud.dataflow.sdk.coders.TableRowJsonCoder;
 import com.google.cloud.dataflow.sdk.coders.VarIntCoder;
 import com.google.cloud.dataflow.sdk.coders.VarLongCoder;
 import com.google.cloud.dataflow.sdk.coders.VoidCoder;
+import com.google.common.base.Optional;
+import com.google.common.reflect.TypeToken;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,7 +31,10 @@ import org.apache.spark.serializer.SerializerInstance;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.collection.Seq;
+import scala.collection.immutable.List;
 import scala.reflect.ClassTag;
+import scala.reflect.OptManifest;
 
 public class CoderSerializer extends Serializer implements Serializable {
 
@@ -35,11 +42,11 @@ public class CoderSerializer extends Serializer implements Serializable {
 
   private static class CoderSerializationStream<T> extends SerializationStream {
 
-    private Map<Class<?>, Coder<?>> coders;
+    private CoderRegistry coderRegistry;
     private final OutputStream out;
 
-    public CoderSerializationStream(Map<Class<?>, Coder<?>> coders, OutputStream out) {
-      this.coders = coders;
+    public CoderSerializationStream(CoderRegistry coderRegistry, OutputStream out) {
+      this.coderRegistry = coderRegistry;
       this.out = out;
     }
 
@@ -47,11 +54,14 @@ public class CoderSerializer extends Serializer implements Serializable {
     public <U> SerializationStream writeObject(U t, ClassTag<U> tag) {
       Class<?> cls = tag.runtimeClass();
       try {
-        Coder<U> coder = (Coder<U>) coders.get(cls);
-        if (coder == null) {
+        // If U is a collection type (e.g. List or Seq) then we can't get the component
+        // type (since we only have ClassTag, not TypeTag). The result is that we can't
+        // find the correct coder here.
+        Optional<? extends Coder<?>> coder = coderRegistry.getCoder(TypeToken.of(cls));
+        if (!coder.isPresent()) {
           throw new RuntimeException("No coder found for class " + cls);
         }
-        coder.encode(t, out, Coder.Context.OUTER);
+        ((Coder<U>) coder.get()).encode(t, out, Coder.Context.OUTER);
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
@@ -79,11 +89,11 @@ public class CoderSerializer extends Serializer implements Serializable {
 
   private static class CoderDeserializationStream<T> extends DeserializationStream {
 
-    private Map<Class<?>, Coder<?>> coders;
+    private CoderRegistry coderRegistry;
     private InputStream in;
 
-    public CoderDeserializationStream(Map<Class<?>, Coder<?>> coders, InputStream in) {
-      this.coders = coders;
+    public CoderDeserializationStream(CoderRegistry coderRegistry, InputStream in) {
+      this.coderRegistry = coderRegistry;
       this.in = in;
     }
 
@@ -91,11 +101,11 @@ public class CoderSerializer extends Serializer implements Serializable {
     public <U> U readObject(ClassTag<U> tag) {
       Class<?> cls = tag.runtimeClass();
       try {
-        Coder<U> coder = (Coder<U>) coders.get(cls);
-        if (coder == null) {
+        Optional<? extends Coder<?>> coder = coderRegistry.getCoder(TypeToken.of(cls));
+        if (!coder.isPresent()) {
           throw new RuntimeException("No coder found for class " + cls);
         }
-        return coder.decode(in, Coder.Context.OUTER);
+        return ((Coder<U>) coder.get()).decode(in, Coder.Context.OUTER);
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
@@ -113,10 +123,10 @@ public class CoderSerializer extends Serializer implements Serializable {
 
   private static class CoderSerializerInstance extends SerializerInstance {
 
-    private Map<Class<?>, Coder<?>> coders;
+    private CoderRegistry coderRegistry;
 
-    public CoderSerializerInstance(Map<Class<?>, Coder<?>> coders) {
-      this.coders = coders;
+    public CoderSerializerInstance(CoderRegistry coderRegistry) {
+      this.coderRegistry = coderRegistry;
     }
 
     @Override
@@ -143,29 +153,22 @@ public class CoderSerializer extends Serializer implements Serializable {
 
     @Override
     public SerializationStream serializeStream(OutputStream s) {
-      return new CoderSerializationStream<>(coders, s);
+      return new CoderSerializationStream<>(coderRegistry, s);
     }
 
     @Override
     public DeserializationStream deserializeStream(InputStream s) {
-      return new CoderDeserializationStream<>(coders, s);
+      return new CoderDeserializationStream<>(coderRegistry, s);
     }
   }
 
   @Override
   public SerializerInstance newInstance() {
-    Map<Class<?>, Coder<?>> coders = new HashMap<>();
-    // TODO - get coders from a Pipeline's CoderRegistry
-    coders.put(Double.class, DoubleCoder.of());
-    coders.put(Instant.class, InstantCoder.of());
-    coders.put(Integer.class, VarIntCoder.of());
-    coders.put(Long.class, VarLongCoder.of());
-    coders.put(String.class, StringUtf8Coder.of());
-    coders.put(TableRow.class, TableRowJsonCoder.of());
-    coders.put(Void.class, VoidCoder.of());
-    coders.put(byte[].class, ByteArrayCoder.of());
+    CoderRegistry coderRegistry = new CoderRegistry();
+    coderRegistry.registerStandardCoders();
+    coderRegistry.registerCoder(Seq.class, SeqCoder.class);
 
-    return new CoderSerializerInstance(coders);
+    return new CoderSerializerInstance(coderRegistry);
   }
 
 }
