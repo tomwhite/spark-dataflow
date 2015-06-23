@@ -97,6 +97,9 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
    */
   private SparkPipelineRunner(SparkPipelineOptions options) {
     mOptions = options;
+
+    // set the context classloader so that Hadoop classloading works
+    Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
   }
 
 
