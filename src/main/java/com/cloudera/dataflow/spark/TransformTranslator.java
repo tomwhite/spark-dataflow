@@ -15,6 +15,9 @@
 
 package com.cloudera.dataflow.spark;
 
+import com.google.cloud.dataflow.contrib.hadoop.HadoopFileSource;
+import com.google.cloud.dataflow.sdk.io.Read;
+import com.google.cloud.dataflow.sdk.io.Source;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.Arrays;
@@ -53,6 +56,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaRDDLike;
@@ -384,6 +388,23 @@ public final class TransformTranslator {
     };
   }
 
+  private static <T> TransformEvaluator<Read.Bound<T>> read() {
+    return new TransformEvaluator<Read.Bound<T>>() {
+      @Override
+      public void evaluate(Read.Bound<T> transform, EvaluationContext context) {
+        Source<T> source = transform.getSource();
+        if (source instanceof HadoopFileSource) {
+          // special case to use native Hadoop input formats
+          HadoopFileSource hadoopSource = (HadoopFileSource) source;
+          evaluateHadoop(transform, context, hadoopSource.getFilepattern(), hadoopSource.getFormatClass(),
+              hadoopSource.getKeyClass(), hadoopSource.getValueClass());
+        } else {
+          // TODO: implement this by wrapping DF Sources as Hadoop InputFormat
+          throw new UnsupportedOperationException();
+        }
+      }
+    };
+  }
 
   private static <T> TransformEvaluator<TextIO.Read.Bound<T>> readText() {
     return new TransformEvaluator<TextIO.Read.Bound<T>>() {
@@ -506,6 +527,23 @@ public final class TransformTranslator {
     };
   }
 
+  private static <K, V> void evaluateHadoop(PTransform<?, ?> transform,
+      EvaluationContext context, String filepattern,
+      Class<? extends FileInputFormat<K, V>> formatClass, Class<K> keyClass, Class<V>
+      valueClass) {
+    JavaSparkContext jsc = context.getSparkContext();
+    @SuppressWarnings ("unchecked")
+    JavaPairRDD<K, V> file = jsc.newAPIHadoopFile(filepattern, formatClass, keyClass,
+        valueClass, new Configuration());
+    JavaRDD<KV<K, V>> rdd = file.map(new Function<Tuple2<K, V>, KV<K, V>>() {
+      @Override
+      public KV<K, V> call(Tuple2<K, V> t2) throws Exception {
+        return KV.of(t2._1(), t2._2());
+      }
+    });
+    context.setOutputRDD(transform, rdd);
+  }
+
   private static <T> TransformEvaluator<Window.Bound<T>> window() {
     return new TransformEvaluator<Window.Bound<T>>() {
       @Override
@@ -608,6 +646,7 @@ public final class TransformTranslator {
       .newHashMap();
 
   static {
+    EVALUATORS.put(Read.Bound.class, read());
     EVALUATORS.put(TextIO.Read.Bound.class, readText());
     EVALUATORS.put(TextIO.Write.Bound.class, writeText());
     EVALUATORS.put(AvroIO.Read.Bound.class, readAvro());

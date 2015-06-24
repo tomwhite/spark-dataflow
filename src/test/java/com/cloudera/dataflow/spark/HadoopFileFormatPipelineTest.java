@@ -16,7 +16,9 @@
 package com.cloudera.dataflow.spark;
 
 import com.cloudera.dataflow.hadoop.HadoopIO;
+import com.google.cloud.dataflow.contrib.hadoop.HadoopFileSource;
 import com.google.cloud.dataflow.sdk.Pipeline;
+import com.google.cloud.dataflow.sdk.io.Read;
 import com.google.cloud.dataflow.sdk.io.TextIO;
 import com.google.cloud.dataflow.sdk.options.PipelineOptionsFactory;
 import com.google.cloud.dataflow.sdk.transforms.DoFn;
@@ -64,12 +66,12 @@ public class HadoopFileFormatPipelineTest {
     populateFile();
 
     Pipeline p = Pipeline.create(PipelineOptionsFactory.create());
-    @SuppressWarnings("unchecked")
-    Class<? extends FileInputFormat<IntWritable, Text>> inputFormatClass =
-        (Class<? extends FileInputFormat<IntWritable, Text>>) (Class<?>) SequenceFileInputFormat.class;
-    HadoopIO.Read.Bound<IntWritable,Text> bound =
-        HadoopIO.Read.from(inputFile.getAbsolutePath(), inputFormatClass, IntWritable.class, Text.class);
-    PCollection<KV<IntWritable, Text>> input = p.apply(bound);
+    HadoopFileSource<IntWritable, Text> source =
+        HadoopFileSource.from(inputFile.getAbsolutePath())
+            .withFormatClass(SequenceFileInputFormat.class)
+            .withKeyClass(IntWritable.class)
+            .withValueClass(Text.class);
+    PCollection<KV<IntWritable, Text>> input = p.apply(Read.from(source));
     input.apply(ParDo.of(new TabSeparatedString()))
         .apply(TextIO.Write.to(outputFile.getAbsolutePath()).withoutSharding());
     EvaluationResult res = SparkPipelineRunner.create().run(p);

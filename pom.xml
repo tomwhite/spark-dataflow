@@ -300,6 +300,11 @@ License.
         </dependency>
         <dependency>
             <groupId>com.google.cloud.dataflow</groupId>
+            <artifactId>google-cloud-dataflow-java-contrib-hadoop</artifactId>
+            <version>manual_build</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.cloud.dataflow</groupId>
             <artifactId>google-cloud-dataflow-java-examples-all</artifactId>
             <version>${google-cloud-dataflow-version}</version>
             <exclusions>
