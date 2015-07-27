@@ -18,6 +18,7 @@ package com.cloudera.dataflow.spark;
 import com.google.cloud.dataflow.sdk.PipelineResult;
 import com.google.cloud.dataflow.sdk.values.PCollection;
 import com.google.cloud.dataflow.sdk.values.PValue;
+import org.apache.spark.api.java.JavaRDDLike;
 
 /**
  * Interface for retrieving the result(s) of running a pipeline. Allows us to translate between
@@ -51,6 +52,15 @@ public interface EvaluationResult extends PipelineResult {
    * @return Result of aggregation associated with specified name.
    */
   <T> T getAggregatorValue(String aggName, Class<T> resultType);
+
+  /**
+   * Retrieves a Spark RDD associated with the PCollection passed in.
+   *
+   * @param pcollection Collection we wish to translate.
+   * @param <T>         Type of elements contained in collection.
+   * @return Spark RDD associated with collection.
+   */
+  <T> JavaRDDLike<T, ?> asRDD(PCollection<T> pcollection);
 
   /**
    * Releases any runtime resources, including distributed-execution contexts currently held by

@@ -238,6 +238,13 @@ public class EvaluationContext implements EvaluationResult {
   }
 
   @Override
+  public <T> JavaRDDLike<T, ?> asRDD(PCollection<T> pcollection) {
+    @SuppressWarnings("unchecked")
+    RDDHolder<T> rddHolder = (RDDHolder<T>) pcollections.get(pcollection);
+    return rddHolder.getRDD();
+  }
+
+  @Override
   public void close() {
     SparkContextFactory.stopSparkContext(jsc);
   }
