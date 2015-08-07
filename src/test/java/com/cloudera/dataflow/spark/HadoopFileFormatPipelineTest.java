@@ -15,7 +15,6 @@
 
 package com.cloudera.dataflow.spark;
 
-import com.cloudera.dataflow.hadoop.HadoopIO;
 import com.google.cloud.dataflow.contrib.hadoop.HadoopFileSource;
 import com.google.cloud.dataflow.sdk.Pipeline;
 import com.google.cloud.dataflow.sdk.io.Read;
@@ -37,7 +36,6 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.SequenceFile.Writer;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.junit.Before;
 import org.junit.Rule;
@@ -67,10 +65,8 @@ public class HadoopFileFormatPipelineTest {
 
     Pipeline p = Pipeline.create(PipelineOptionsFactory.create());
     HadoopFileSource<IntWritable, Text> source =
-        HadoopFileSource.from(inputFile.getAbsolutePath())
-            .withFormatClass(SequenceFileInputFormat.class)
-            .withKeyClass(IntWritable.class)
-            .withValueClass(Text.class);
+        HadoopFileSource.from(inputFile.getAbsolutePath(), SequenceFileInputFormat.class,
+            IntWritable.class, Text.class);
     PCollection<KV<IntWritable, Text>> input = p.apply(Read.from(source));
     input.apply(ParDo.of(new TabSeparatedString()))
         .apply(TextIO.Write.to(outputFile.getAbsolutePath()).withoutSharding());
