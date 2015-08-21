@@ -93,7 +93,7 @@ public class SimpleWordCountTest {
     }
   }
 
-  private static class CountWords extends PTransform<PCollection<String>, PCollection<String>> {
+  static class CountWords extends PTransform<PCollection<String>, PCollection<String>> {
     @Override
     public PCollection<String> apply(PCollection<String> lines) {
 
