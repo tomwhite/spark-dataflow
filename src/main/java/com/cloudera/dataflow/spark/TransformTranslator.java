@@ -15,20 +15,21 @@
 
 package com.cloudera.dataflow.spark;
 
+import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputDirectory;
+import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputFilePrefix;
+import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputFileTemplate;
+import static com.cloudera.dataflow.spark.ShardNameBuilder.replaceShardCount;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 import com.google.api.client.util.Maps;
-import com.google.cloud.dataflow.sdk.coders.CannotProvideCoderException;
 import com.google.cloud.dataflow.sdk.coders.Coder;
 import com.google.cloud.dataflow.sdk.coders.KvCoder;
 import com.google.cloud.dataflow.sdk.io.AvroIO;
 import com.google.cloud.dataflow.sdk.io.TextIO;
-import com.google.cloud.dataflow.sdk.transforms.Combine;
 import com.google.cloud.dataflow.sdk.transforms.Create;
 import com.google.cloud.dataflow.sdk.transforms.Flatten;
 import com.google.cloud.dataflow.sdk.transforms.GroupByKey;
@@ -58,14 +59,8 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaRDDLike;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.Function;
-import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFunction;
 import scala.Tuple2;
-
-import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputDirectory;
-import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputFilePrefix;
-import static com.cloudera.dataflow.spark.ShardNameBuilder.getOutputFileTemplate;
-import static com.cloudera.dataflow.spark.ShardNameBuilder.replaceShardCount;
 
 import com.cloudera.dataflow.hadoop.HadoopIO;
 
@@ -138,189 +133,6 @@ public final class TransformTranslator {
     };
   }
 
-  private static final FieldGetter GROUPED_FG = new FieldGetter(Combine.GroupedValues.class);
-
-  private static <K, VI, VO> TransformEvaluator<Combine.GroupedValues<K, VI, VO>> grouped() {
-    return new TransformEvaluator<Combine.GroupedValues<K, VI, VO>>() {
-      @Override
-      public void evaluate(Combine.GroupedValues<K, VI, VO> transform, EvaluationContext context) {
-        Combine.KeyedCombineFn<K, VI, ?, VI> keyed = GROUPED_FG.get("fn", transform);
-        @SuppressWarnings("unchecked")
-        JavaRDDLike<KV<K, Iterable<VI>>, ?> inRDD =
-            (JavaRDDLike<KV<K, Iterable<VI>>, ?>) context.getInputRDD(transform);
-        context.setOutputRDD(transform, inRDD.map(new KVFunction<>(keyed)));
-      }
-    };
-  }
-
-  private static final FieldGetter COMBINE_GLOBALLY_FG = new FieldGetter(Combine.Globally.class);
-
-  private static <I, A, O> TransformEvaluator<Combine.Globally<I, O>> combineGlobally() {
-    return new TransformEvaluator<Combine.Globally<I, O>>() {
-
-      @Override
-      public void evaluate(Combine.Globally<I, O> transform, EvaluationContext context) {
-        final Combine.CombineFn<I, A, O> globally = COMBINE_GLOBALLY_FG.get("fn", transform);
-
-        @SuppressWarnings("unchecked")
-        JavaRDDLike<I, ?> inRdd = (JavaRDDLike<I, ?>) context.getInputRDD(transform);
-
-        final Coder<I> iCoder = context.getInput(transform).getCoder();
-        final Coder<A> aCoder;
-        try {
-          aCoder = globally.getAccumulatorCoder(
-              context.getPipeline().getCoderRegistry(), iCoder);
-        } catch (CannotProvideCoderException e) {
-          throw new IllegalStateException("Could not determine coder for accumulator", e);
-        }
-
-        // Use coders to convert objects in the PCollection to byte arrays, so they
-        // can be transferred over the network for the shuffle.
-        JavaRDD<byte[]> inRddBytes = inRdd.map(CoderHelpers.toByteFunction(iCoder));
-
-        /*A*/ byte[] acc = inRddBytes.aggregate(
-            CoderHelpers.toByteArray(globally.createAccumulator(), aCoder),
-            new Function2</*A*/ byte[], /*I*/ byte[], /*A*/ byte[]>() {
-              @Override
-              public /*A*/ byte[] call(/*A*/ byte[] ab, /*I*/ byte[] ib) throws Exception {
-                A a = CoderHelpers.fromByteArray(ab, aCoder);
-                I i = CoderHelpers.fromByteArray(ib, iCoder);
-                return CoderHelpers.toByteArray(globally.addInput(a, i), aCoder);
-              }
-            },
-            new Function2</*A*/ byte[], /*A*/ byte[], /*A*/ byte[]>() {
-              @Override
-              public /*A*/ byte[] call(/*A*/ byte[] a1b, /*A*/ byte[] a2b) throws Exception {
-                A a1 = CoderHelpers.fromByteArray(a1b, aCoder);
-                A a2 = CoderHelpers.fromByteArray(a2b, aCoder);
-                // don't use Guava's ImmutableList.of as values may be null
-                List<A> accumulators = Collections.unmodifiableList(Arrays.asList(a1, a2));
-                A merged = globally.mergeAccumulators(accumulators);
-                return CoderHelpers.toByteArray(merged, aCoder);
-              }
-            }
-        );
-        O output = globally.extractOutput(CoderHelpers.fromByteArray(acc, aCoder));
-
-        Coder<O> coder = context.getOutput(transform).getCoder();
-        JavaRDD<byte[]> outRdd = context.getSparkContext().parallelize(
-            // don't use Guava's ImmutableList.of as output may be null
-            CoderHelpers.toByteArrays(Collections.singleton(output), coder));
-        context.setOutputRDD(transform, outRdd.map(CoderHelpers.fromByteFunction(coder)));
-      }
-    };
-  }
-
-  private static final FieldGetter COMBINE_PERKEY_FG = new FieldGetter(Combine.PerKey.class);
-
-  private static <K, VI, VA, VO> TransformEvaluator<Combine.PerKey<K, VI, VO>> combinePerKey() {
-    return new TransformEvaluator<Combine.PerKey<K, VI, VO>>() {
-      @Override
-      public void evaluate(Combine.PerKey<K, VI, VO> transform, EvaluationContext context) {
-        final Combine.KeyedCombineFn<K, VI, VA, VO> keyed =
-            COMBINE_PERKEY_FG.get("fn", transform);
-        @SuppressWarnings("unchecked")
-        JavaRDDLike<KV<K, VI>, ?> inRdd =
-            (JavaRDDLike<KV<K, VI>, ?>) context.getInputRDD(transform);
-
-        @SuppressWarnings("unchecked")
-        KvCoder<K, VI> inputCoder = (KvCoder<K, VI>) context.getInput(transform).getCoder();
-        Coder<K> keyCoder = inputCoder.getKeyCoder();
-        Coder<VI> viCoder = inputCoder.getValueCoder();
-        Coder<VA> vaCoder = null;
-        try {
-          vaCoder = keyed.getAccumulatorCoder(
-              context.getPipeline().getCoderRegistry(), keyCoder, viCoder);
-        } catch (CannotProvideCoderException e) {
-          throw new IllegalStateException("Could not determine coder for accumulator", e);
-        }
-        final Coder<KV<K, VI>> kviCoder = KvCoder.of(keyCoder, viCoder);
-        final Coder<KV<K, VA>> kvaCoder = KvCoder.of(keyCoder, vaCoder);
-
-        // We need to duplicate K as both the key of the JavaPairRDD as well as inside the value,
-        // since the functions passed to combineByKey don't receive the associated key of each
-        // value, and we need to map back into methods in Combine.KeyedCombineFn, which each
-        // require the key in addition to the VI's and VA's being merged/accumulated. Once Spark
-        // provides a way to include keys in the arguments of combine/merge functions, we won't
-        // need to duplicate the keys anymore.
-        JavaPairRDD<K, KV<K, VI>> inRddDuplicatedKeyPair = inRdd.mapToPair(
-            new PairFunction<KV<K, VI>, K, KV<K, VI>>() {
-              @Override
-              public Tuple2<K, KV<K, VI>> call(KV<K, VI> kv) {
-                return new Tuple2<>(kv.getKey(), kv);
-              }
-            });
-
-        // Use coders to convert objects in the PCollection to byte arrays, so they
-        // can be transferred over the network for the shuffle.
-        JavaPairRDD<ByteArray, byte[]> inRddDuplicatedKeyPairBytes = inRddDuplicatedKeyPair
-            .mapToPair(CoderHelpers.toByteFunction(keyCoder, kviCoder));
-
-        // The output of combineByKey will be "VA" (accumulator) types rather than "VO" (final
-        // output types) since Combine.CombineFn only provides ways to merge VAs, and no way
-        // to merge VOs.
-        JavaPairRDD</*K*/ ByteArray, /*KV<K, VA>*/ byte[]> accumulatedBytes =
-            inRddDuplicatedKeyPairBytes.combineByKey(
-            new Function</*KV<K, VI>*/ byte[], /*KV<K, VA>*/ byte[]>() {
-              @Override
-              public /*KV<K, VA>*/ byte[] call(/*KV<K, VI>*/ byte[] input) {
-                KV<K, VI> kvi = CoderHelpers.fromByteArray(input, kviCoder);
-                VA va = keyed.createAccumulator(kvi.getKey());
-                va = keyed.addInput(kvi.getKey(), va, kvi.getValue());
-                return CoderHelpers.toByteArray(KV.of(kvi.getKey(), va), kvaCoder);
-              }
-            },
-            new Function2</*KV<K, VA>*/ byte[], /*KV<K, VI>*/ byte[], /*KV<K, VA>*/ byte[]>() {
-              @Override
-              public /*KV<K, VA>*/ byte[] call(/*KV<K, VA>*/ byte[] acc,
-                  /*KV<K, VI>*/ byte[] input) {
-                KV<K, VA> kva = CoderHelpers.fromByteArray(acc, kvaCoder);
-                KV<K, VI> kvi = CoderHelpers.fromByteArray(input, kviCoder);
-                VA va = keyed.addInput(kva.getKey(), kva.getValue(), kvi.getValue());
-                kva = KV.of(kva.getKey(), va);
-                return CoderHelpers.toByteArray(KV.of(kva.getKey(), kva.getValue()), kvaCoder);
-              }
-            },
-            new Function2</*KV<K, VA>*/ byte[], /*KV<K, VA>*/ byte[], /*KV<K, VA>*/ byte[]>() {
-              @Override
-              public /*KV<K, VA>*/ byte[] call(/*KV<K, VA>*/ byte[] acc1,
-                  /*KV<K, VA>*/ byte[] acc2) {
-                KV<K, VA> kva1 = CoderHelpers.fromByteArray(acc1, kvaCoder);
-                KV<K, VA> kva2 = CoderHelpers.fromByteArray(acc2, kvaCoder);
-                VA va = keyed.mergeAccumulators(kva1.getKey(),
-                    // don't use Guava's ImmutableList.of as values may be null
-                    Collections.unmodifiableList(Arrays.asList(kva1.getValue(), kva2.getValue())));
-                return CoderHelpers.toByteArray(KV.of(kva1.getKey(), va), kvaCoder);
-              }
-            });
-
-        JavaPairRDD<K, VO> extracted = accumulatedBytes
-            .mapToPair(CoderHelpers.fromByteFunction(keyCoder, kvaCoder))
-            .mapValues(
-                new Function<KV<K, VA>, VO>() {
-                  @Override
-                  public VO call(KV<K, VA> acc) {
-                    return keyed.extractOutput(acc.getKey(), acc.getValue());
-                  }
-                });
-        context.setOutputRDD(transform, fromPair(extracted));
-      }
-    };
-  }
-
-  private static final class KVFunction<K, V> implements Function<KV<K, Iterable<V>>, KV<K, V>> {
-    private final Combine.KeyedCombineFn<K, V, ?, V> keyed;
-
-    KVFunction(Combine.KeyedCombineFn<K, V, ?, V> keyed) {
-      this.keyed = keyed;
-    }
-
-    @Override
-    public KV<K, V> call(KV<K, Iterable<V>> kv) throws Exception {
-      return KV.of(kv.getKey(), keyed.apply(kv.getKey(), kv.getValue()));
-    }
-  }
-
   private static <K, V> JavaPairRDD<K, V> toPair(JavaRDDLike<KV<K, V>, ?> rdd) {
     return rdd.mapToPair(new PairFunction<KV<K, V>, K, V>() {
       @Override
@@ -354,13 +166,11 @@ public final class TransformTranslator {
     };
   }
 
-  private static final FieldGetter MULTIDO_FG = new FieldGetter(ParDo.BoundMulti.class);
-
   private static <I, O> TransformEvaluator<ParDo.BoundMulti<I, O>> multiDo() {
     return new TransformEvaluator<ParDo.BoundMulti<I, O>>() {
       @Override
       public void evaluate(ParDo.BoundMulti<I, O> transform, EvaluationContext context) {
-        TupleTag<O> mainOutputTag = MULTIDO_FG.get("mainOutputTag", transform);
+        TupleTag<O> mainOutputTag = transform.getMainOutputTag();
         MultiDoFnFunction<I, O> multifn = new MultiDoFnFunction<>(
             transform.getFn(),
             context.getRuntimeContext(),
@@ -599,28 +409,6 @@ public final class TransformTranslator {
     };
   }
 
-  private static <T> TransformEvaluator<View.AsSingleton<T>> viewAsSingleton() {
-    return new TransformEvaluator<View.AsSingleton<T>>() {
-      @Override
-      public void evaluate(View.AsSingleton<T> transform, EvaluationContext context) {
-        Iterable<T> input = context.get(context.getInput(transform));
-        context.setPView(context.getOutput(transform), Iterables.transform(input,
-            new WindowingFunction<T>()));
-      }
-    };
-  }
-
-  private static <T> TransformEvaluator<View.AsIterable<T>> viewAsIter() {
-    return new TransformEvaluator<View.AsIterable<T>>() {
-      @Override
-      public void evaluate(View.AsIterable<T> transform, EvaluationContext context) {
-        Iterable<T> input = context.get(context.getInput(transform));
-        context.setPView(context.getOutput(transform), Iterables.transform(input,
-            new WindowingFunction<T>()));
-      }
-    };
-  }
-
   private static <R, W> TransformEvaluator<View.CreatePCollectionView<R, W>> createPCollView() {
     return new TransformEvaluator<View.CreatePCollectionView<R, W>>() {
       @Override
@@ -687,13 +475,8 @@ public final class TransformTranslator {
     EVALUATORS.put(ParDo.Bound.class, parDo());
     EVALUATORS.put(ParDo.BoundMulti.class, multiDo());
     EVALUATORS.put(GroupByKey.GroupByKeyOnly.class, gbk());
-    EVALUATORS.put(Combine.GroupedValues.class, grouped());
-    EVALUATORS.put(Combine.Globally.class, combineGlobally());
-    EVALUATORS.put(Combine.PerKey.class, combinePerKey());
     EVALUATORS.put(Flatten.FlattenPCollectionList.class, flattenPColl());
     EVALUATORS.put(Create.Values.class, create());
-    EVALUATORS.put(View.AsSingleton.class, viewAsSingleton());
-    EVALUATORS.put(View.AsIterable.class, viewAsIter());
     EVALUATORS.put(View.CreatePCollectionView.class, createPCollView());
     EVALUATORS.put(Window.Bound.class, window());
   }
