@@ -16,14 +16,22 @@
 package com.cloudera.dataflow.spark;
 
 import com.google.cloud.dataflow.sdk.Pipeline;
+import com.google.cloud.dataflow.sdk.coders.CannotProvideCoderException;
+import com.google.cloud.dataflow.sdk.coders.Coder;
+import com.google.cloud.dataflow.sdk.coders.CoderRegistry;
+import com.google.cloud.dataflow.sdk.coders.SetCoder;
 import com.google.cloud.dataflow.sdk.coders.StringUtf8Coder;
 import com.google.cloud.dataflow.sdk.transforms.Combine;
 import com.google.cloud.dataflow.sdk.transforms.Create;
 import com.google.cloud.dataflow.sdk.values.PCollection;
 import com.google.common.collect.Iterables;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -31,8 +39,8 @@ import static org.junit.Assert.assertEquals;
 public class CombineGloballyTest {
 
   private static final String[] WORDS_ARRAY = {
-      "hi there", "hi", "hi sue bob",
-      "hi sue", "", "bob hi"};
+      "a", "b", "c",
+      "d", "", "f"};
   private static final List<String> WORDS = Arrays.asList(WORDS_ARRAY);
 
   @Test
@@ -43,45 +51,55 @@ public class CombineGloballyTest {
     PCollection<String> output = inputWords.apply(Combine.globally(new WordMerger()));
 
     EvaluationResult res = SparkPipelineRunner.create().run(p);
-    assertEquals("hi there,hi,hi sue bob,hi sue,,bob hi", Iterables.getOnlyElement(res.get(output)));
+    assertEquals("[, a, b, c, d, f]", Iterables.getOnlyElement(res.get(output)));
     res.close();
   }
 
-  public static class WordMerger extends Combine.CombineFn<String, StringBuilder, String> implements
-      Serializable {
+  public static class WordMerger extends Combine.CombineFn<String, Set<String>, String>
+      implements Serializable {
 
     @Override
-    public StringBuilder createAccumulator() {
-      // return null to differentiate from an empty string
+    public Set<String> createAccumulator() {
+      // return null to test that nulls are allowed
       return null;
     }
 
     @Override
-    public StringBuilder addInput(StringBuilder accumulator, String input) {
+    public Coder<Set<String>> getAccumulatorCoder(CoderRegistry registry,
+        Coder<String> inputCoder) throws CannotProvideCoderException {
+      return SetCoder.of(StringUtf8Coder.of());
+    }
+
+    @Override
+    public Set<String> addInput(Set<String> accumulator, String input) {
       return combine(accumulator, input);
     }
 
     @Override
-    public StringBuilder mergeAccumulators(Iterable<StringBuilder> accumulators) {
-      StringBuilder sb = new StringBuilder();
-      for (StringBuilder accum : accumulators) {
+    public Set<String> mergeAccumulators(Iterable<Set<String>> accumulators) {
+      Set<String> set = new TreeSet<>();
+      for (Set<String> accum : accumulators) {
         if (accum != null) {
-          sb.append(accum.toString());
+          set.addAll(accum);
         }
       }
-      return sb;
+      return set;
     }
 
     @Override
-    public String extractOutput(StringBuilder accumulator) {
-      return accumulator.toString();
+    public String extractOutput(Set<String> accumulator) {
+      List<String> sorted = new ArrayList<>(accumulator);
+      Collections.sort(sorted);
+      return sorted.toString();
     }
 
-    private static StringBuilder combine(StringBuilder accum, String datum) {
+    private static Set<String> combine(Set<String> accum, String datum) {
       if (null == accum) {
-        return new StringBuilder(datum);
+        Set<String> set = new TreeSet<>();
+        set.add(datum);
+        return set;
       } else {
-        accum.append(",").append(datum);
+        accum.add(datum);
         return accum;
       }
     }
