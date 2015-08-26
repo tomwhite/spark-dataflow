@@ -76,7 +76,7 @@ public final class TransformTranslator {
   private TransformTranslator() {
   }
 
-  private static class FieldGetter {
+  static class FieldGetter {
     private final Map<String, Field> fields;
 
     FieldGetter(Class<?> clazz) {
@@ -413,7 +413,7 @@ public final class TransformTranslator {
     rdd.saveAsNewAPIHadoopFile(outputDir, keyClass, valueClass, formatClass, conf);
   }
 
-  private static final FieldGetter WINDOW_FG = new FieldGetter(Window.Bound.class);
+  static final FieldGetter WINDOW_FG = new FieldGetter(Window.Bound.class);
 
   private static <T, W extends BoundedWindow> TransformEvaluator<Window.Bound<T>> window() {
     return new TransformEvaluator<Window.Bound<T>>() {

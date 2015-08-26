@@ -22,6 +22,9 @@ import com.google.cloud.dataflow.sdk.runners.PipelineRunner;
 import com.google.cloud.dataflow.sdk.runners.TransformTreeNode;
 import com.google.cloud.dataflow.sdk.transforms.AppliedPTransform;
 import com.google.cloud.dataflow.sdk.transforms.PTransform;
+import com.google.cloud.dataflow.sdk.transforms.windowing.GlobalWindows;
+import com.google.cloud.dataflow.sdk.transforms.windowing.Window;
+import com.google.cloud.dataflow.sdk.transforms.windowing.WindowFn;
 import com.google.cloud.dataflow.sdk.values.PInput;
 import com.google.cloud.dataflow.sdk.values.POutput;
 import com.google.cloud.dataflow.sdk.values.PValue;
@@ -104,6 +107,10 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
   @Override
   public EvaluationResult run(Pipeline pipeline) {
     try {
+      WindowingPipelineDetector windowingPipelineDetector = new WindowingPipelineDetector();
+      pipeline.traverseTopologically(windowingPipelineDetector);
+      System.out.println("Windowing pipeline? " + windowingPipelineDetector.isWindowing());
+
       LOG.info("Executing pipeline using the SparkPipelineRunner.");
 
       JavaSparkContext jsc = SparkContextFactory.getSparkContext(mOptions.getSparkMaster());
@@ -122,6 +129,83 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
       }
       // otherwise just wrap in a RuntimeException
       throw new RuntimeException(e);
+    }
+  }
+
+  private static final class WindowingPipelineDetector implements Pipeline.PipelineVisitor {
+
+    private boolean windowing;
+
+    // Set upon entering a composite node which can be directly mapped to a single
+    // TransformEvaluator.
+    private TransformTreeNode currentTranslatedCompositeNode;
+
+    /**
+     * If true, we're currently inside a subtree of a composite node which directly maps to a
+     * single TransformEvaluator; children nodes are ignored, and upon post-visiting the translated
+     * composite node, the associated TransformEvaluator will be visited.
+     */
+    private boolean inTranslatedCompositeNode() {
+      return currentTranslatedCompositeNode != null;
+    }
+
+    @Override
+    public void enterCompositeTransform(TransformTreeNode node) {
+      if (inTranslatedCompositeNode()) {
+        return;
+      }
+
+      if (node.getTransform() != null
+          && TransformTranslator.hasTransformEvaluator(node.getTransform().getClass())) {
+        LOG.info("Entering directly-translatable composite transform: '{}'",
+            node.getFullName());
+        LOG.debug("Composite transform class: '{}'", node.getTransform().getClass());
+        currentTranslatedCompositeNode = node;
+      }
+    }
+
+    @Override
+    public void leaveCompositeTransform(TransformTreeNode node) {
+      // NB: We depend on enterCompositeTransform and leaveCompositeTransform providing 'node'
+      // objects for which Object.equals() returns true iff they are the same logical node
+      // within the tree.
+      if (inTranslatedCompositeNode() && node.equals(currentTranslatedCompositeNode)) {
+        LOG.info("Post-visiting directly-translatable composite transform: '{}'",
+            node.getFullName());
+        doVisitTransform(node);
+        currentTranslatedCompositeNode = null;
+      }
+    }
+
+    @Override
+    public void visitTransform(TransformTreeNode node) {
+      if (inTranslatedCompositeNode()) {
+        LOG.info("Skipping '{}'; already in composite transform.", node.getFullName());
+        return;
+      }
+      doVisitTransform(node);
+    }
+
+    private <PT extends PTransform<? super PInput, POutput>>
+    void doVisitTransform(TransformTreeNode node) {
+      @SuppressWarnings("unchecked")
+      PT transform = (PT) node.getTransform();
+      @SuppressWarnings("unchecked")
+      Class<PT> transformClass = (Class<PT>) (Class<?>) transform.getClass();
+      if (transformClass.isAssignableFrom(Window.Bound.class)) {
+        WindowFn<?, ?> windowFn = TransformTranslator.WINDOW_FG.get("windowFn", transform);
+        if (!(windowFn instanceof GlobalWindows)) {
+          windowing = true;
+        }
+      }
+    }
+
+    @Override
+    public void visitValue(PValue pvalue, TransformTreeNode node) {
+    }
+
+    public boolean isWindowing() {
+      return windowing;
     }
   }
 
