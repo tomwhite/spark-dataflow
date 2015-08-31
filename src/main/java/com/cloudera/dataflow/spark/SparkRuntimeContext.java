@@ -37,9 +37,8 @@ import com.google.cloud.dataflow.sdk.transforms.Sum;
 import com.google.cloud.dataflow.sdk.values.TypeDescriptor;
 import com.google.common.collect.ImmutableList;
 import org.apache.spark.Accumulator;
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
 
-import com.cloudera.dataflow.spark.aggregators.AggAccumParam;
 import com.cloudera.dataflow.spark.aggregators.NamedAggregators;
 
 /**
@@ -50,7 +49,7 @@ public class SparkRuntimeContext implements Serializable {
   /**
    * An accumulator that is a map from names to aggregators.
    */
-  private final Accumulator<NamedAggregators> accum;
+  private Accumulator<NamedAggregators> accum;
 
   private final String serializedPipelineOptions;
 
@@ -60,8 +59,9 @@ public class SparkRuntimeContext implements Serializable {
   private final Map<String, Aggregator<?, ?>> aggregators = new HashMap<>();
   private transient CoderRegistry coderRegistry;
 
-  SparkRuntimeContext(JavaSparkContext jsc, Pipeline pipeline) {
-    this.accum = jsc.accumulator(new NamedAggregators(), new AggAccumParam());
+  SparkRuntimeContext(JavaStreamingContext jsc, Pipeline pipeline) {
+    // accumulators are not supported in Spark Streaming
+    //this.accum = jsc.accumulator(new NamedAggregators(), new AggAccumParam());
     this.serializedPipelineOptions = serializePipelineOptions(pipeline.getOptions());
   }
 
@@ -136,7 +136,8 @@ public class SparkRuntimeContext implements Serializable {
               (Combine.CombineFn<IN, INTER, OUT>) combineFn,
               (Coder<IN>) getCoder(combineFn),
               this);
-      accum.add(new NamedAggregators(named, state));
+      // accumulators are not supported in Spark Streaming
+      //accum.add(new NamedAggregators(named, state));
       aggregator = new SparkAggregator<>(named, state);
       aggregators.put(named, aggregator);
     }

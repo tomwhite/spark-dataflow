@@ -18,6 +18,8 @@ package com.cloudera.dataflow.spark;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.serializer.KryoSerializer;
+import org.apache.spark.streaming.Duration;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
 
 final class SparkContextFactory {
 
@@ -25,6 +27,8 @@ final class SparkContextFactory {
    * If the property <code>dataflow.spark.test.reuseSparkContext</code> is set to
    * <code>true</code> then the Spark context will be reused for dataflow pipelines.
    * This property should only be enabled for tests.
+   *
+   * Note that streaming contexts are never reused.
    */
   public static final String TEST_REUSE_SPARK_CONTEXT =
       "dataflow.spark.test.reuseSparkContext";
@@ -50,10 +54,19 @@ final class SparkContextFactory {
     }
   }
 
+  public static synchronized JavaStreamingContext getStreamingContext(String master,
+      Duration batchDuration) {
+    return createStreamingContext(master, batchDuration);
+  }
+
   public static synchronized void stopSparkContext(JavaSparkContext context) {
     if (!Boolean.getBoolean(TEST_REUSE_SPARK_CONTEXT)) {
       context.stop();
     }
+  }
+
+  public static synchronized void stopStreamingContext(JavaStreamingContext context) {
+     context.stop();
   }
 
   private static JavaSparkContext createSparkContext(String master) {
@@ -62,5 +75,14 @@ final class SparkContextFactory {
     conf.setAppName("spark dataflow pipeline job");
     conf.set("spark.serializer", KryoSerializer.class.getCanonicalName());
     return new JavaSparkContext(conf);
+  }
+
+  private static JavaStreamingContext createStreamingContext(String master,
+      Duration batchDuration) {
+    SparkConf conf = new SparkConf();
+    conf.setMaster(master);
+    conf.setAppName("spark dataflow streaming pipeline job");
+    conf.set("spark.serializer", KryoSerializer.class.getCanonicalName());
+    return new JavaStreamingContext(conf, batchDuration);
   }
 }

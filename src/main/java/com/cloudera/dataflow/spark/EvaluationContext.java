@@ -19,7 +19,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -39,15 +38,15 @@ import com.google.cloud.dataflow.sdk.values.POutput;
 import com.google.cloud.dataflow.sdk.values.PValue;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
-import org.apache.spark.api.java.JavaRDDLike;
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.streaming.api.java.JavaDStreamLike;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
 
 
 /**
  * Evaluation context allows us to define how pipeline instructions.
  */
 public class EvaluationContext implements EvaluationResult {
-  private final JavaSparkContext jsc;
+  private final JavaStreamingContext jsc;
   private final Pipeline pipeline;
   private final SparkRuntimeContext runtime;
   private final CoderRegistry registry;
@@ -58,7 +57,7 @@ public class EvaluationContext implements EvaluationResult {
   private final Map<PValue, Iterable<? extends WindowedValue<?>>> pview = new LinkedHashMap<>();
   private AppliedPTransform<?, ?, ?> currentTransform;
 
-  public EvaluationContext(JavaSparkContext jsc, Pipeline pipeline) {
+  public EvaluationContext(JavaStreamingContext jsc, Pipeline pipeline) {
     this.jsc = jsc;
     this.pipeline = pipeline;
     this.registry = pipeline.getCoderRegistry();
@@ -76,31 +75,21 @@ public class EvaluationContext implements EvaluationResult {
 
     private Iterable<T> values;
     private Coder<T> coder;
-    private JavaRDDLike<WindowedValue<T>, ?> rdd;
+    private JavaDStreamLike<WindowedValue<T>, ?, ?> rdd;
 
     public RDDHolder(Iterable<T> values, Coder<T> coder) {
       this.values = values;
       this.coder = coder;
     }
 
-    public RDDHolder(JavaRDDLike<WindowedValue<T>, ?> rdd) {
+    public RDDHolder(JavaDStreamLike<WindowedValue<T>, ?, ?> rdd) {
       this.rdd = rdd;
     }
 
-    public JavaRDDLike<WindowedValue<T>, ?> getRDD() {
+    public JavaDStreamLike<WindowedValue<T>, ?, ?> getRDD() {
       if (rdd == null) {
-        Iterable<WindowedValue<T>> windowedValues = Iterables.transform(values,
-            new Function<T, WindowedValue<T>>() {
-          @Override
-          public WindowedValue<T> apply(T t) {
-            // TODO: this is wrong if T is a TimestampedValue
-            return WindowedValue.valueInEmptyWindows(t);
-          }
-        });
-        WindowedValue.ValueOnlyWindowedValueCoder<T> windowCoder =
-            WindowedValue.getValueOnlyCoder(coder);
-        rdd = jsc.parallelize(CoderHelpers.toByteArrays(windowedValues, windowCoder))
-            .map(CoderHelpers.fromByteFunction(windowCoder));
+        // TODO: use queueStream to convert from an JavaRDDLike to a JavaDStreamLike
+        throw new IllegalStateException("Cannot parallelize in streaming");
       }
       return rdd;
     }
@@ -109,15 +98,18 @@ public class EvaluationContext implements EvaluationResult {
       if (values == null) {
         coder = pcollection.getCoder();
         @SuppressWarnings("unchecked")
-        JavaRDDLike<byte[], ?> bytesRDD = rdd.map(WindowingHelpers.<T>unwindowFunction())
+        JavaDStreamLike<byte[], ?, ?> bytesRDD =
+            rdd.map(WindowingHelpers.<T>unwindowFunction())
             .map(CoderHelpers.toByteFunction(coder));
-        List<byte[]> clientBytes = bytesRDD.collect();
-        values = Iterables.transform(clientBytes, new Function<byte[], T>() {
-          @Override
-          public T apply(byte[] bytes) {
-            return CoderHelpers.fromByteArray(bytes, coder);
-          }
-        });
+        // TODO: use bytesRDD.foreachRDD to materialize
+//        List<byte[]> clientBytes = bytesRDD.collect();
+//        values = Iterables.transform(clientBytes, new Function<byte[], T>() {
+//          @Override
+//          public T apply(byte[] bytes) {
+//            return CoderHelpers.fromByteArray(bytes, coder);
+//          }
+//        });
+        throw new UnsupportedOperationException("Cannot collect values from dstream.");
       }
       return values;
     }
@@ -132,7 +124,7 @@ public class EvaluationContext implements EvaluationResult {
     }
   }
 
-  JavaSparkContext getSparkContext() {
+  JavaStreamingContext getSparkContext() {
     return jsc;
   }
 
@@ -164,7 +156,7 @@ public class EvaluationContext implements EvaluationResult {
     return output;
   }
 
-  <T> void setOutputRDD(PTransform<?, ?> transform, JavaRDDLike<WindowedValue<T>, ?> rdd) {
+  <T> void setOutputRDD(PTransform<?, ?> transform, JavaDStreamLike<WindowedValue<T>, ?, ?> rdd) {
     setRDD((PValue) getOutput(transform), rdd);
   }
 
@@ -176,31 +168,32 @@ public class EvaluationContext implements EvaluationResult {
     pview.put(view, value);
   }
 
-  JavaRDDLike<?, ?> getRDD(PValue pvalue) {
+  JavaDStreamLike<?, ?, ?> getRDD(PValue pvalue) {
     RDDHolder<?> rddHolder = pcollections.get(pvalue);
-    JavaRDDLike<?, ?> rdd = rddHolder.getRDD();
+    JavaDStreamLike<?, ?, ?> rdd = rddHolder.getRDD();
     leafRdds.remove(rddHolder);
     if (multireads.contains(pvalue)) {
       // Ensure the RDD is marked as cached
-      rdd.rdd().cache();
+      rdd.dstream().cache();
     } else {
       multireads.add(pvalue);
     }
     return rdd;
   }
 
-  <T> void setRDD(PValue pvalue, JavaRDDLike<WindowedValue<T>, ?> rdd) {
-    try {
-      rdd.rdd().setName(pvalue.getName());
-    } catch (IllegalStateException e) {
-      // name not set, ignore
-    }
+  <T> void setRDD(PValue pvalue, JavaDStreamLike<WindowedValue<T>, ?, ?> rdd) {
+    // can't set name on streaming RDDs
+//    try {
+//      rdd.rdd().setName(pvalue.getName());
+//    } catch (IllegalStateException e) {
+//      // name not set, ignore
+//    }
     RDDHolder<T> rddHolder = new RDDHolder<>(rdd);
     pcollections.put(pvalue, rddHolder);
     leafRdds.add(rddHolder);
   }
 
-  JavaRDDLike<?, ?> getInputRDD(PTransform<? extends PInput, ?> transform) {
+  JavaDStreamLike<?, ?, ?> getInputRDD(PTransform<? extends PInput, ?> transform) {
     return getRDD((PValue) getInput(transform));
   }
 
@@ -216,8 +209,8 @@ public class EvaluationContext implements EvaluationResult {
    */
   void computeOutputs() {
     for (RDDHolder<?> rddHolder : leafRdds) {
-      JavaRDDLike<?, ?> rdd = rddHolder.getRDD();
-      rdd.rdd().cache(); // cache so that any subsequent get() is cheap
+      JavaDStreamLike<?, ?, ?> rdd = rddHolder.getRDD();
+      rdd.dstream().cache(); // cache so that any subsequent get() is cheap
       rdd.count(); // force the RDD to be computed
     }
   }
@@ -230,11 +223,13 @@ public class EvaluationContext implements EvaluationResult {
       return result;
     }
     if (pcollections.containsKey(value)) {
-      JavaRDDLike<?, ?> rdd = pcollections.get(value).getRDD();
-      @SuppressWarnings("unchecked")
-      T res = (T) Iterables.getOnlyElement(rdd.collect());
-      pobjects.put(value, res);
-      return res;
+      JavaDStreamLike<?, ?, ?> rdd = pcollections.get(value).getRDD();
+      // TODO: use bytesRDD.foreachRDD to materialize
+//      @SuppressWarnings("unchecked")
+//      T res = (T) Iterables.getOnlyElement(rdd.collect());
+//      pobjects.put(value, res);
+//      return res;
+      throw new UnsupportedOperationException("Cannot collect values from dstream.");
     }
     throw new IllegalStateException("Cannot resolve un-known PObject: " + value);
   }
@@ -265,7 +260,7 @@ public class EvaluationContext implements EvaluationResult {
 
   @Override
   public void close() {
-    SparkContextFactory.stopSparkContext(jsc);
+    jsc.stop();
   }
 
   /** The runner is blocking. */

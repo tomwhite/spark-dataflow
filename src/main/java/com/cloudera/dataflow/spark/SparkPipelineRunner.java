@@ -22,6 +22,7 @@ import com.google.cloud.dataflow.sdk.runners.PipelineRunner;
 import com.google.cloud.dataflow.sdk.runners.TransformTreeNode;
 import com.google.cloud.dataflow.sdk.transforms.AppliedPTransform;
 import com.google.cloud.dataflow.sdk.transforms.PTransform;
+import com.google.cloud.dataflow.sdk.transforms.windowing.FixedWindows;
 import com.google.cloud.dataflow.sdk.transforms.windowing.GlobalWindows;
 import com.google.cloud.dataflow.sdk.transforms.windowing.Window;
 import com.google.cloud.dataflow.sdk.transforms.windowing.WindowFn;
@@ -29,7 +30,9 @@ import com.google.cloud.dataflow.sdk.values.PInput;
 import com.google.cloud.dataflow.sdk.values.POutput;
 import com.google.cloud.dataflow.sdk.values.PValue;
 import org.apache.spark.SparkException;
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.streaming.Durations;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -111,12 +114,28 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
       pipeline.traverseTopologically(windowingPipelineDetector);
       System.out.println("Windowing pipeline? " + windowingPipelineDetector.isWindowing());
 
-      LOG.info("Executing pipeline using the SparkPipelineRunner.");
+      StreamingPipelineVisitor streamingPipelineVisitor = new StreamingPipelineVisitor();
+      pipeline.traverseTopologically(streamingPipelineVisitor);
+      org.apache.spark.streaming.Duration batchDuration = streamingPipelineVisitor
+          .getBatchDuration();
+      if (batchDuration == null) {
+        throw new IllegalStateException("No batch duration found for pipeline. Make " +
+            "sure you have defined a FixedWindowing function.");
+      }
 
-      JavaSparkContext jsc = SparkContextFactory.getSparkContext(mOptions.getSparkMaster());
+      if (mOptions.isStreaming()) {
+        LOG.info("Executing streaming pipeline using the SparkPipelineRunner.");
+      } else {
+        LOG.info("Executing batch pipeline using the SparkPipelineRunner.");
+      }
+
+      JavaStreamingContext jsc = SparkContextFactory.getStreamingContext(
+          mOptions.getSparkMaster(), batchDuration);
       EvaluationContext ctxt = new EvaluationContext(jsc, pipeline);
       pipeline.traverseTopologically(new Evaluator(ctxt));
       ctxt.computeOutputs();
+
+      jsc.start();
 
       LOG.info("Pipeline execution complete.");
 
@@ -206,6 +225,86 @@ public final class SparkPipelineRunner extends PipelineRunner<EvaluationResult> 
 
     public boolean isWindowing() {
       return windowing;
+    }
+  }
+
+  private static final class StreamingPipelineVisitor implements Pipeline.PipelineVisitor {
+
+    private org.apache.spark.streaming.Duration batchDuration;
+
+    // Set upon entering a composite node which can be directly mapped to a single
+    // TransformEvaluator.
+    private TransformTreeNode currentTranslatedCompositeNode;
+
+    /**
+     * If true, we're currently inside a subtree of a composite node which directly maps to a
+     * single TransformEvaluator; children nodes are ignored, and upon post-visiting the translated
+     * composite node, the associated TransformEvaluator will be visited.
+     */
+    private boolean inTranslatedCompositeNode() {
+      return currentTranslatedCompositeNode != null;
+    }
+
+    @Override
+    public void enterCompositeTransform(TransformTreeNode node) {
+      if (inTranslatedCompositeNode()) {
+        return;
+      }
+
+      if (node.getTransform() != null
+          && TransformTranslator.hasTransformEvaluator(node.getTransform().getClass())) {
+        LOG.info("Entering directly-translatable composite transform: '{}'",
+            node.getFullName());
+        LOG.debug("Composite transform class: '{}'", node.getTransform().getClass());
+        currentTranslatedCompositeNode = node;
+      }
+    }
+
+    @Override
+    public void leaveCompositeTransform(TransformTreeNode node) {
+      // NB: We depend on enterCompositeTransform and leaveCompositeTransform providing 'node'
+      // objects for which Object.equals() returns true iff they are the same logical node
+      // within the tree.
+      if (inTranslatedCompositeNode() && node.equals(currentTranslatedCompositeNode)) {
+        LOG.info("Post-visiting directly-translatable composite transform: '{}'",
+            node.getFullName());
+        doVisitTransform(node);
+        currentTranslatedCompositeNode = null;
+      }
+    }
+
+    @Override
+    public void visitTransform(TransformTreeNode node) {
+      if (inTranslatedCompositeNode()) {
+        LOG.info("Skipping '{}'; already in composite transform.", node.getFullName());
+        return;
+      }
+      doVisitTransform(node);
+    }
+
+    private <PT extends PTransform<? super PInput, POutput>>
+    void doVisitTransform(TransformTreeNode node) {
+      @SuppressWarnings("unchecked")
+      PT transform = (PT) node.getTransform();
+      @SuppressWarnings("unchecked")
+      Class<PT> transformClass = (Class<PT>) (Class<?>) transform.getClass();
+      if (transformClass.isAssignableFrom(Window.Bound.class)) {
+        WindowFn<?, ?> windowFn = TransformTranslator.WINDOW_FG.get("windowFn", transform);
+        if (windowFn instanceof FixedWindows) {
+          Duration size = ((FixedWindows) windowFn).getSize();
+          batchDuration = Durations.milliseconds(size.getMillis());
+        } else if (!(windowFn instanceof GlobalWindows)) {
+          throw new IllegalStateException("Windowing function not supported: " + windowFn);
+        }
+      }
+    }
+
+    @Override
+    public void visitValue(PValue pvalue, TransformTreeNode node) {
+    }
+
+    public org.apache.spark.streaming.Duration getBatchDuration() {
+      return batchDuration;
     }
   }
 

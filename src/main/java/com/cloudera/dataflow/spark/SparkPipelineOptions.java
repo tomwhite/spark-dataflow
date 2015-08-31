@@ -25,4 +25,8 @@ public interface SparkPipelineOptions extends PipelineOptions {
   String getSparkMaster();
 
   void setSparkMaster(String master);
+
+  @Description("Set to true if running a streaming pipeline.")
+  boolean isStreaming();
+  void setStreaming(boolean value);
 }
