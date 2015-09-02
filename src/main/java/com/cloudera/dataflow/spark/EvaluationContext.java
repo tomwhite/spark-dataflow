@@ -109,7 +109,7 @@ public class EvaluationContext implements EvaluationResult {
       if (values == null) {
         coder = pcollection.getCoder();
         @SuppressWarnings("unchecked")
-        JavaRDDLike<byte[], ?> bytesRDD = rdd.map(new Unwindow())
+        JavaRDDLike<byte[], ?> bytesRDD = rdd.map(WindowingHelpers.<T>unwindowFunction())
             .map(CoderHelpers.toByteFunction(coder));
         List<byte[]> clientBytes = bytesRDD.collect();
         values = Iterables.transform(clientBytes, new Function<byte[], T>() {
@@ -129,14 +129,6 @@ public class EvaluationContext implements EvaluationResult {
           return WindowedValue.valueInEmptyWindows(t); // TODO: not the right place?
         }
       });
-    }
-  }
-
-  static class Unwindow<T>
-      implements org.apache.spark.api.java.function.Function<WindowedValue<T>, T> {
-    @Override
-    public T call(WindowedValue<T> wv) throws Exception {
-      return wv.getValue();
     }
   }
 

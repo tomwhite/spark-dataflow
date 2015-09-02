@@ -136,7 +136,8 @@ public final class TransformTranslator {
         JavaRDDLike<WindowedValue<KV<K, Iterable<V>>>, ?> outRDD = fromPair(toPair(inRDD)
             .mapToPair(CoderHelpers.toByteFunction(windowedKeyCoder, valueCoder))
             .groupByKey()
-            .mapToPair(CoderHelpers.fromByteFunctionIterable(windowedKeyCoder, valueCoder)));
+            .mapToPair(CoderHelpers.fromByteFunctionIterable(windowedKeyCoder,
+                valueCoder)));
         context.setOutputRDD(transform, outRDD);
       }
     };
@@ -144,24 +145,12 @@ public final class TransformTranslator {
 
   private static <K, V> JavaPairRDD<WindowedValue<K>, V>
       toPair(JavaRDDLike<WindowedValue<KV<K, V>>, ?> rdd) {
-    return rdd.mapToPair(new PairFunction<WindowedValue<KV<K, V>>,
-        WindowedValue<K>, V>() {
-      @Override
-      public Tuple2<WindowedValue<K>, V> call(WindowedValue<KV<K, V>> wkv) {
-        KV<K, V> kv = wkv.getValue();
-        return new Tuple2<>(wkv.withValue(kv.getKey()), kv.getValue());
-      }
-    });
+    return rdd.mapToPair(WindowingHelpers.<K, V>toPairWindowFunction());
   }
 
   private static <K, V> JavaRDDLike<WindowedValue<KV<K, V>>, ?>
       fromPair(JavaPairRDD<WindowedValue<K>, V> rdd) {
-    return rdd.map(new Function<Tuple2<WindowedValue<K>, V>, WindowedValue<KV<K, V>>>() {
-      @Override
-      public WindowedValue<KV<K, V>> call(Tuple2<WindowedValue<K>, V> t2) {
-        return t2._1().withValue(KV.of(t2._1().getValue(), t2._2()));
-      }
-    });
+    return rdd.map(WindowingHelpers.<K, V>fromPairWindowFunction());
   }
 
   private static <I, O> TransformEvaluator<ParDo.Bound<I, O>> parDo() {
@@ -218,13 +207,8 @@ public final class TransformTranslator {
       @Override
       public void evaluate(TextIO.Read.Bound<T> transform, EvaluationContext context) {
         String pattern = transform.getFilepattern();
-        JavaRDD<WindowedValue<String>> rdd = context.getSparkContext().textFile(pattern).map(
-            new Function<String, WindowedValue<String>>() {
-              @Override
-              public WindowedValue<String> call(String s) {
-                return WindowedValue.valueInEmptyWindows(s);
-              }
-            });
+        JavaRDD<WindowedValue<String>> rdd = context.getSparkContext().textFile(pattern)
+            .map(WindowingHelpers.<String>windowFunction());
         context.setOutputRDD(transform, rdd);
       }
     };
@@ -237,11 +221,11 @@ public final class TransformTranslator {
         @SuppressWarnings("unchecked")
         JavaPairRDD<T, Void> last =
             ((JavaRDDLike<WindowedValue<T>, ?>) context.getInputRDD(transform))
-            .mapToPair(new PairFunction<WindowedValue<T>, T,
-                Void>() {
+            .map(WindowingHelpers.<T>unwindowFunction())
+            .mapToPair(new PairFunction<T, T, Void>() {
               @Override
-              public Tuple2<T, Void> call(WindowedValue<T> t) throws Exception {
-                return new Tuple2<>(t.getValue(), null);
+              public Tuple2<T, Void> call(T t) throws Exception {
+                return new Tuple2<>(t, null);
               }
             });
         ShardTemplateInformation shardTemplateInfo =
@@ -267,12 +251,12 @@ public final class TransformTranslator {
                                  AvroKey.class, NullWritable.class,
                                  new Configuration()).keys();
         JavaRDD<WindowedValue<T>> rdd = avroFile.map(
-            new Function<AvroKey<T>, WindowedValue<T>>() {
+            new Function<AvroKey<T>, T>() {
               @Override
-              public WindowedValue<T> call(AvroKey<T> key) {
-                return WindowedValue.valueInEmptyWindows(key.datum());
+              public T call(AvroKey<T> key) {
+                return key.datum();
               }
-            });
+            }).map(WindowingHelpers.<T>windowFunction());
         context.setOutputRDD(transform, rdd);
       }
     };
@@ -292,10 +276,11 @@ public final class TransformTranslator {
         @SuppressWarnings("unchecked")
         JavaPairRDD<AvroKey<T>, NullWritable> last =
             ((JavaRDDLike<WindowedValue<T>, ?>) context.getInputRDD(transform))
-            .mapToPair(new PairFunction<WindowedValue<T>, AvroKey<T>, NullWritable>() {
+            .map(WindowingHelpers.<T>unwindowFunction())
+            .mapToPair(new PairFunction<T, AvroKey<T>, NullWritable>() {
               @Override
-              public Tuple2<AvroKey<T>, NullWritable> call(WindowedValue<T> t) throws Exception {
-                return new Tuple2<>(new AvroKey<>(t.getValue()), NullWritable.get());
+              public Tuple2<AvroKey<T>, NullWritable> call(T t) throws Exception {
+                return new Tuple2<>(new AvroKey<>(t), NullWritable.get());
               }
             });
         ShardTemplateInformation shardTemplateInfo =
@@ -320,12 +305,12 @@ public final class TransformTranslator {
             transform.getKeyClass(), transform.getValueClass(),
             new Configuration());
         JavaRDD<WindowedValue<KV<K, V>>> rdd =
-            file.map(new Function<Tuple2<K, V>, WindowedValue<KV<K, V>>>() {
+            file.map(new Function<Tuple2<K, V>, KV<K, V>>() {
           @Override
-          public WindowedValue<KV<K, V>> call(Tuple2<K, V> t2) throws Exception {
-            return WindowedValue.valueInEmptyWindows(KV.of(t2._1(), t2._2()));
+          public KV<K, V> call(Tuple2<K, V> t2) throws Exception {
+            return KV.of(t2._1(), t2._2());
           }
-        });
+        }).map(WindowingHelpers.<KV<K, V>>windowFunction());
         context.setOutputRDD(transform, rdd);
       }
     };
@@ -338,11 +323,11 @@ public final class TransformTranslator {
         @SuppressWarnings("unchecked")
         JavaPairRDD<K, V> last = ((JavaRDDLike<WindowedValue<KV<K, V>>, ?>) context
             .getInputRDD(transform))
-            .mapToPair(new PairFunction<WindowedValue<KV<K, V>>, K, V>() {
+            .map(WindowingHelpers.<KV<K, V>>unwindowFunction())
+            .mapToPair(new PairFunction<KV<K, V>, K, V>() {
               @Override
-              public Tuple2<K, V> call(WindowedValue<KV<K, V>> wkv) throws Exception {
-                KV<K, V> kv = wkv.getValue();
-                return new Tuple2<>(kv.getKey(), kv.getValue());
+              public Tuple2<K, V> call(KV<K, V> t) throws Exception {
+                return new Tuple2<>(t.getKey(), t.getValue());
               }
             });
         ShardTemplateInformation shardTemplateInfo =
