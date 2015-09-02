@@ -16,10 +16,7 @@
 package com.cloudera.dataflow.spark;
 
 import com.google.cloud.dataflow.sdk.util.WindowedValue;
-import com.google.cloud.dataflow.sdk.values.KV;
 import org.apache.spark.api.java.function.Function;
-import org.apache.spark.api.java.function.PairFunction;
-import scala.Tuple2;
 
 /**
  * Helper functions for working with windows.
@@ -56,46 +53,6 @@ public final class WindowingHelpers {
       @Override
       public T call(WindowedValue<T> t) {
         return t.getValue();
-      }
-    };
-  }
-
-  /**
-   * A function for converting a {@link WindowedValue} key-value pair to a
-   * {@link WindowedValue} key and a separate (non-windowed) value.
-   *
-   * @param <K>   The type of the key.
-   * @param <V>   The type of the value.
-   * @return A function that accepts a {@link WindowedValue} key-value pair and returns
-   * a {@link WindowedValue} key and a separate (non-windowed) value.
-   */
-  public static <K, V> PairFunction<WindowedValue<KV<K, V>>,
-      WindowedValue<K>, V> toPairWindowFunction() {
-    return new PairFunction<WindowedValue<KV<K, V>>,
-        WindowedValue<K>, V>() {
-      @Override
-      public Tuple2<WindowedValue<K>, V> call(WindowedValue<KV<K, V>> wkv) {
-        KV<K, V> kv = wkv.getValue();
-        return new Tuple2<>(wkv.withValue(kv.getKey()), kv.getValue());
-      }
-    };
-  }
-
-  /**
-   * A function for converting a {@link Tuple2} of a {@link WindowedValue} key and a
-   * separate (non-windowed) value to a {@link WindowedValue} key-value pair.
-   *
-   * @param <K>   The type of the key.
-   * @param <V>   The type of the value.
-   * @return A function that accepts a {@link Tuple2} of a {@link WindowedValue} key and a
-   * separate (non-windowed) value and returns a {@link WindowedValue} key-value pair.
-   */
-  public static <K, V> Function<Tuple2<WindowedValue<K>, V>,
-      WindowedValue<KV<K, V>>> fromPairWindowFunction() {
-    return new Function<Tuple2<WindowedValue<K>, V>, WindowedValue<KV<K, V>>>() {
-      @Override
-      public WindowedValue<KV<K, V>> call(Tuple2<WindowedValue<K>, V> t2) {
-        return t2._1().withValue(KV.of(t2._1().getValue(), t2._2()));
       }
     };
   }

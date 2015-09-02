@@ -124,33 +124,39 @@ public final class TransformTranslator {
             (JavaRDDLike<WindowedValue<KV<K, V>>, ?>) context.getInputRDD(transform);
         @SuppressWarnings("unchecked")
         KvCoder<K, V> coder = (KvCoder<K, V>) context.getInput(transform).getCoder();
-        Coder<? extends BoundedWindow> windowCoder =
-            context.getInput(transform).getWindowingStrategy().getWindowFn().windowCoder();
         final Coder<K> keyCoder = coder.getKeyCoder();
-        final WindowedValue.WindowedValueCoder<K> windowedKeyCoder =
-            WindowedValue.getFullCoder(keyCoder, windowCoder);
         final Coder<V> valueCoder = coder.getValueCoder();
 
         // Use coders to convert objects in the PCollection to byte arrays, so they
         // can be transferred over the network for the shuffle.
-        JavaRDDLike<WindowedValue<KV<K, Iterable<V>>>, ?> outRDD = fromPair(toPair(inRDD)
-            .mapToPair(CoderHelpers.toByteFunction(windowedKeyCoder, valueCoder))
+        JavaRDDLike<WindowedValue<KV<K, Iterable<V>>>, ?> outRDD = fromPair(
+              toPair(inRDD.map(WindowingHelpers.<KV<K, V>>unwindowFunction()))
+            .mapToPair(CoderHelpers.toByteFunction(keyCoder, valueCoder))
             .groupByKey()
-            .mapToPair(CoderHelpers.fromByteFunctionIterable(windowedKeyCoder,
-                valueCoder)));
+            .mapToPair(CoderHelpers.fromByteFunctionIterable(keyCoder, valueCoder)))
+            // empty windows are OK here, see GroupByKey#evaluateHelper in the SDK
+            .map(WindowingHelpers.<KV<K, Iterable<V>>>windowFunction());
         context.setOutputRDD(transform, outRDD);
       }
     };
   }
 
-  private static <K, V> JavaPairRDD<WindowedValue<K>, V>
-      toPair(JavaRDDLike<WindowedValue<KV<K, V>>, ?> rdd) {
-    return rdd.mapToPair(WindowingHelpers.<K, V>toPairWindowFunction());
+  private static <K, V> JavaPairRDD<K, V> toPair(JavaRDDLike<KV<K, V>, ?> rdd) {
+    return rdd.mapToPair(new PairFunction<KV<K, V>, K, V>() {
+      @Override
+      public Tuple2<K, V> call(KV<K, V> kv) {
+        return new Tuple2<>(kv.getKey(), kv.getValue());
+      }
+    });
   }
 
-  private static <K, V> JavaRDDLike<WindowedValue<KV<K, V>>, ?>
-      fromPair(JavaPairRDD<WindowedValue<K>, V> rdd) {
-    return rdd.map(WindowingHelpers.<K, V>fromPairWindowFunction());
+  private static <K, V> JavaRDDLike<KV<K, V>, ?> fromPair(JavaPairRDD<K, V> rdd) {
+    return rdd.map(new Function<Tuple2<K, V>, KV<K, V>>() {
+      @Override
+      public KV<K, V> call(Tuple2<K, V> t2) {
+        return KV.of(t2._1(), t2._2());
+      }
+    });
   }
 
   private static <I, O> TransformEvaluator<ParDo.Bound<I, O>> parDo() {
